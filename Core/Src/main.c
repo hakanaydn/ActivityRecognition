@@ -2,7 +2,6 @@
 #include "mpu6050.h"
 #include "transport.h"
 #include "version.h"
-#include "har_model.h"
 #include <stdint.h>
 #include <string.h>
 #include "FreeRTOS.h"
@@ -17,7 +16,6 @@ DMA_HandleTypeDef hdma_usart1_tx;
 static uint8_t mpu_buf[14];
 static volatile uint8_t i2c_busy;
 static MPU6050_Calib_t mpu_calib;
-static HAR_RingBuf_t har_rb;
 static volatile uint8_t scheduler_running;
 
 void xPortSysTickHandler(void);
@@ -93,14 +91,11 @@ static char *fmt_fixed(char *p, int16_t raw, int16_t divisor, int dec)
 
 static void format_imu_line(int16_t *s)
 {
-    static char line[64];
+    static char line[32];
     char *p = line;
     p = fmt_fixed(p, s[0], 16384, 4); *p++ = ',';  // ax (g)
     p = fmt_fixed(p, s[1], 16384, 4); *p++ = ',';  // ay (g)
-    p = fmt_fixed(p, s[2], 16384, 4); *p++ = ',';  // az (g)
-    p = fmt_fixed(p, s[4], 131,   2); *p++ = ',';  // gx (°/s)
-    p = fmt_fixed(p, s[5], 131,   2); *p++ = ',';  // gy (°/s)
-    p = fmt_fixed(p, s[6], 131,   2);              // gz (°/s)
+    p = fmt_fixed(p, s[2], 16384, 4);              // az (g)
     *p++ = '\r'; *p++ = '\n';
     Output_Write((uint8_t *)line, p - line);
 }
@@ -110,14 +105,13 @@ void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c)
     if (hi2c->Instance != I2C1) return;
     MPU6050_Correct(mpu_buf, &mpu_calib);
     format_imu_line((int16_t *)mpu_buf);
-    i2c_read_next();
+    i2c_busy = 0;
 }
 
 void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c)
 {
     if (hi2c->Instance != I2C1) return;
     i2c_busy = 0;
-    i2c_read_next();
 }
 
 void MX_GPIO_Init(void)
@@ -283,6 +277,8 @@ static StackType_t idle_stack[configMINIMAL_STACK_SIZE];
 static StaticTask_t idle_tcb;
 static StackType_t blink_stack[configMINIMAL_STACK_SIZE];
 static StaticTask_t blink_tcb;
+static StackType_t sensor_stack[configMINIMAL_STACK_SIZE];
+static StaticTask_t sensor_tcb;
 
 static void blink_task(void *arg)
 {
@@ -293,6 +289,18 @@ static void blink_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(500));
         HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);
         vTaskDelay(pdMS_TO_TICKS(500));
+    }
+}
+
+static void sensor_task(void *arg)
+{
+    (void)arg;
+    TickType_t last = xTaskGetTickCount();
+    for (;;)
+    {
+        vTaskDelayUntil(&last, pdMS_TO_TICKS(20));
+        if (!i2c_busy)
+            i2c_read_next();
     }
 }
 
@@ -323,7 +331,7 @@ int main(void)
 
     if (!MPU6050_Init(&hi2c1))
     {
-        uint8_t msg[] = "MPU6050 init failed, continuing anyway\r\n";
+        uint8_t msg[] = "MPU6050 init failed\r\n";
         HAL_UART_Transmit(&huart1, msg, sizeof(msg) - 1, 100);
     }
     else
@@ -337,12 +345,11 @@ int main(void)
             uint8_t msg[] = "done\r\n";
             HAL_UART_Transmit(&huart1, msg, sizeof(msg) - 1, 100);
         }
-
-        HAR_Init(&har_rb);
-        i2c_read_next();
     }
     xTaskCreateStatic(blink_task, "blink", configMINIMAL_STACK_SIZE,
                       NULL, 1, blink_stack, &blink_tcb);
+    xTaskCreateStatic(sensor_task, "sensor", configMINIMAL_STACK_SIZE,
+                      NULL, 2, sensor_stack, &sensor_tcb);
     HAL_UART_Transmit(&huart1, (uint8_t *)"Starting scheduler...\r\n", 23, 100);
     scheduler_running = 1;
     vTaskStartScheduler();

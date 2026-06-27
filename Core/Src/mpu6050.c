@@ -15,10 +15,10 @@ uint8_t MPU6050_Init(I2C_HandleTypeDef *i2c)
     uint8_t whoami = 0;
     if (HAL_I2C_Mem_Read(i2c, MPU6050_ADDR, MPU6050_WHO_AM_I, 1, &whoami, 1, 100) != HAL_OK)
         return 0;
-    if (whoami != 0x68)
+    if (whoami != 0x68 && whoami != 0x70 && whoami != 0x71 && whoami != 0x72)
         return 0;
 
-    uint8_t val = 0x00;
+    uint8_t val = 0x01;  // CLKSEL=1: PLL with X gyro ref (stable gyro)
     HAL_I2C_Mem_Write(i2c, MPU6050_ADDR, MPU6050_PWR_MGMT_1, 1, &val, 1, 100);
 
     val = 0x00;
@@ -78,20 +78,27 @@ uint8_t MPU6050_Calibrate(I2C_HandleTypeDef *i2c, MPU6050_Calib_t *calib, uint16
 
 void MPU6050_Correct(uint8_t *buffer, const MPU6050_Calib_t *calib)
 {
-    int16_t *axis[6] = {
-        (int16_t *)(buffer + 0),
-        (int16_t *)(buffer + 2),
-        (int16_t *)(buffer + 4),
-        (int16_t *)(buffer + 8),
-        (int16_t *)(buffer + 10),
-        (int16_t *)(buffer + 12),
-    };
-    int16_t offsets[6] = {
-        calib->ax_off, calib->ay_off, calib->az_off,
-        calib->gx_off, calib->gy_off, calib->gz_off,
-    };
-    for (int i = 0; i < 6; i++)
-        *axis[i] = *axis[i] - offsets[i];
+    int16_t raw[6];
+    raw[0] = (int16_t)((buffer[0]  << 8) | buffer[1]);
+    raw[1] = (int16_t)((buffer[2]  << 8) | buffer[3]);
+    raw[2] = (int16_t)((buffer[4]  << 8) | buffer[5]);
+    raw[3] = (int16_t)((buffer[8]  << 8) | buffer[9]);
+    raw[4] = (int16_t)((buffer[10] << 8) | buffer[11]);
+    raw[5] = (int16_t)((buffer[12] << 8) | buffer[13]);
+
+    raw[0] -= calib->ax_off;
+    raw[1] -= calib->ay_off;
+    raw[2] -= calib->az_off;
+    raw[3] -= calib->gx_off;
+    raw[4] -= calib->gy_off;
+    raw[5] -= calib->gz_off;
+
+    buffer[0]  = raw[0] & 0xFF;         buffer[1]  = (raw[0] >> 8) & 0xFF;
+    buffer[2]  = raw[1] & 0xFF;         buffer[3]  = (raw[1] >> 8) & 0xFF;
+    buffer[4]  = raw[2] & 0xFF;         buffer[5]  = (raw[2] >> 8) & 0xFF;
+    buffer[8]  = raw[3] & 0xFF;         buffer[9]  = (raw[3] >> 8) & 0xFF;
+    buffer[10] = raw[4] & 0xFF;         buffer[11] = (raw[4] >> 8) & 0xFF;
+    buffer[12] = raw[5] & 0xFF;         buffer[13] = (raw[5] >> 8) & 0xFF;
 }
 
 uint8_t MPU6050_Read_DMA(I2C_HandleTypeDef *i2c, uint8_t *buffer)
