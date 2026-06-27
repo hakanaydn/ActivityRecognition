@@ -19,9 +19,10 @@
 
 ### Çalıştırma
 ```bash
-cd /home/hakan/stm32-mpu6050 && make -j4 && make flash
-# Çıktıyı izlemek için:
-screen /dev/ttyUSB0 115200
+cd /home/hakan/stm32-mpu6050
+make -j4 && make flash       # derle + flash
+make flash                   # sadece flash (tekrar dene, ST-Link bazen ilk seferde hata verir)
+screen /dev/ttyUSB0 115200   # seri monitör
 ```
 
 ---
