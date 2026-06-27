@@ -43,7 +43,8 @@ void MPU6050_SetSampleRate(I2C_HandleTypeDef *i2c, uint16_t rate_hz)
     HAL_I2C_Mem_Write(i2c, MPU6050_ADDR, MPU6050_SMPLRT_DIV, 1, &div, 1, 100);
 }
 
-uint8_t MPU6050_Calibrate(I2C_HandleTypeDef *i2c, MPU6050_Calib_t *calib, uint16_t samples)
+uint8_t MPU6050_Calibrate(I2C_HandleTypeDef *i2c, MPU6050_Calib_t *calib,
+                          uint16_t samples, MPU6050_ProgressCB progress)
 {
     if (samples == 0) return 0;
 
@@ -62,6 +63,13 @@ uint8_t MPU6050_Calibrate(I2C_HandleTypeDef *i2c, MPU6050_Calib_t *calib, uint16
         sum_gx += (int16_t)((buf[8]  << 8) | buf[9]);
         sum_gy += (int16_t)((buf[10] << 8) | buf[11]);
         sum_gz += (int16_t)((buf[12] << 8) | buf[13]);
+
+        if (progress)
+        {
+            int pct = (i + 1) * 100 / samples;
+            if (pct % 10 == 0 || i == samples - 1)
+                progress(pct);
+        }
 
         HAL_Delay(CALIB_DELAY_MS);
     }

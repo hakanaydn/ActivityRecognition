@@ -41,10 +41,13 @@ typedef struct {
     int16_t ax_off, ay_off, az_off;
 } MPU6050_Calib_t;
 
+typedef void (*MPU6050_ProgressCB)(int percent);
+
 uint8_t MPU6050_Init(I2C_HandleTypeDef *i2c);
 void    MPU6050_SetDLPF(I2C_HandleTypeDef *i2c, uint8_t dlpf);
 void    MPU6050_SetSampleRate(I2C_HandleTypeDef *i2c, uint16_t rate_hz);
-uint8_t MPU6050_Calibrate(I2C_HandleTypeDef *i2c, MPU6050_Calib_t *calib, uint16_t samples);
+uint8_t MPU6050_Calibrate(I2C_HandleTypeDef *i2c, MPU6050_Calib_t *calib,
+                          uint16_t samples, MPU6050_ProgressCB progress);
 void    MPU6050_Correct(uint8_t *buffer, const MPU6050_Calib_t *calib);
 uint8_t MPU6050_Read_DMA(I2C_HandleTypeDef *i2c, uint8_t *buffer);
 

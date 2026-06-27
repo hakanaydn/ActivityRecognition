@@ -14,11 +14,27 @@ DMA_HandleTypeDef hdma_i2c1_rx;
 DMA_HandleTypeDef hdma_usart1_tx;
 
 static uint8_t mpu_buf[14];
-static volatile uint8_t i2c_busy;
 static MPU6050_Calib_t mpu_calib;
+static TaskHandle_t sensor_task_handle;
 static volatile uint8_t scheduler_running;
 
 void xPortSysTickHandler(void);
+
+static void prog_bar(int pct)
+{
+    char buf[28];
+    uint8_t n = 0;
+    buf[n++] = '\r'; buf[n++] = '[';
+    int seg = pct / 5;
+    for (int i = 0; i < 20; i++)
+        buf[n++] = (i < seg) ? '=' : ' ';
+    buf[n++] = ']'; buf[n++] = ' ';
+    if (pct >= 100) buf[n++] = '1';
+    if (pct >= 10)  buf[n++] = '0' + (pct / 10) % 10;
+    buf[n++] = '0' + pct % 10;
+    buf[n++] = '%';
+    HAL_UART_Transmit(&huart1, (uint8_t *)buf, n, 100);
+}
 
 void SysTick_Handler(void)
 {
@@ -64,9 +80,8 @@ static void startup_banner(void)
     }
 }
 
-static void i2c_read_next(void)
+static void i2c_start_read(void)
 {
-    i2c_busy = 1;
     HAL_I2C_Mem_Read_DMA(&hi2c1, MPU6050_ADDR, MPU6050_ACCEL_XOUT_H,
                          1, mpu_buf, 14);
 }
@@ -103,15 +118,15 @@ static void format_imu_line(int16_t *s)
 void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c)
 {
     if (hi2c->Instance != I2C1) return;
-    MPU6050_Correct(mpu_buf, &mpu_calib);
-    format_imu_line((int16_t *)mpu_buf);
-    i2c_busy = 0;
+    BaseType_t higher = pdFALSE;
+    xTaskNotifyGive(sensor_task_handle);
+    portYIELD_FROM_ISR(higher);
 }
 
 void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c)
 {
     if (hi2c->Instance != I2C1) return;
-    i2c_busy = 0;
+    i2c_start_read();
 }
 
 void MX_GPIO_Init(void)
@@ -296,11 +311,15 @@ static void sensor_task(void *arg)
 {
     (void)arg;
     TickType_t last = xTaskGetTickCount();
+    vTaskDelay(pdMS_TO_TICKS(10));
+    i2c_start_read();
     for (;;)
     {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         vTaskDelayUntil(&last, pdMS_TO_TICKS(20));
-        if (!i2c_busy)
-            i2c_read_next();
+        MPU6050_Correct(mpu_buf, &mpu_calib);
+        format_imu_line((int16_t *)mpu_buf);
+        i2c_start_read();
     }
 }
 
@@ -339,17 +358,116 @@ int main(void)
         MPU6050_SetDLPF(&hi2c1, MPU6050_DLPF_21HZ);
         MPU6050_SetSampleRate(&hi2c1, 50);
 
-        HAL_UART_Transmit(&huart1, (uint8_t *)"Calibrating... ", 16, 100);
-        if (MPU6050_Calibrate(&hi2c1, &mpu_calib, 100))
+        HAL_UART_Transmit(&huart1, (uint8_t *)
+            "Place sensor flat on a table, chip facing up.\r\n", 50, 100);
+
+        for (;;)
         {
-            uint8_t msg[] = "done\r\n";
-            HAL_UART_Transmit(&huart1, msg, sizeof(msg) - 1, 100);
+            HAL_UART_Transmit(&huart1, (uint8_t *)
+                "Waiting for stable position...\r\n", 34, 100);
+
+#define SWIN 20
+            int16_t sx[SWIN], sy[SWIN], sz[SWIN];
+            uint8_t sci = 0, cnt = 0, tout = 0;
+
+            for (;;)
+            {
+                uint8_t buf[14];
+                HAL_I2C_Mem_Read(&hi2c1, MPU6050_ADDR, MPU6050_ACCEL_XOUT_H,
+                                 1, buf, 14, 100);
+                sx[sci] = (int16_t)((buf[0]  << 8) | buf[1]);
+                sy[sci] = (int16_t)((buf[2]  << 8) | buf[3]);
+                sz[sci] = (int16_t)((buf[4]  << 8) | buf[5]);
+                sci = (sci + 1) % SWIN;
+
+                HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
+
+                if (++cnt % 50 == 0)
+                {
+                    int16_t ax = sx[(sci + SWIN - 1) % SWIN];
+                    int16_t ay = sy[(sci + SWIN - 1) % SWIN];
+                    int16_t az = sz[(sci + SWIN - 1) % SWIN];
+                    char line[32], *p = line;
+                    *p++ = 'X'; *p++ = '='; p = fmt_fixed(p, ax, 16384, 4);
+                    *p++ = ' '; *p++ = 'Y'; *p++ = '='; p = fmt_fixed(p, ay, 16384, 4);
+                    *p++ = ' '; *p++ = 'Z'; *p++ = '='; p = fmt_fixed(p, az, 16384, 4);
+                    *p++ = '\r'; *p++ = '\n';
+                    HAL_UART_Transmit(&huart1, (uint8_t *)line, p - line, 100);
+                }
+
+                if (sci == 0)
+                {
+                    tout++;
+                    int32_t mx = 0, my = 0, mz = 0;
+                    for (int i = 0; i < SWIN; i++)
+                    { mx += sx[i]; my += sy[i]; mz += sz[i]; }
+                    mx /= SWIN; my /= SWIN; mz /= SWIN;
+
+                    int32_t dx = 0, dy = 0, dz = 0;
+                    for (int i = 0; i < SWIN; i++)
+                    {
+                        int32_t d;
+                        d = sx[i] - mx; if (d < 0) d = -d; if (d > dx) dx = d;
+                        d = sy[i] - my; if (d < 0) d = -d; if (d > dy) dy = d;
+                        d = sz[i] - mz; if (d < 0) d = -d; if (d > dz) dz = d;
+                    }
+
+                    if ((dx < 500 && dy < 500 && dz < 500
+                         && mz > 7000
+                         && mx > -12000 && mx < 12000
+                         && my > -12000 && my < 12000)
+                        || tout > 500)
+                    {
+                        if (tout > 500)
+                            HAL_UART_Transmit(&huart1, (uint8_t *)
+                                "Timeout. Calibrating with current position...\r\n", 50, 100);
+                        else
+                            HAL_UART_Transmit(&huart1, (uint8_t *)
+                                "Stable. Calibrating...\r\n", 24, 100);
+                        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
+                        break;
+                    }
+                }
+                HAL_Delay(20);
+            }
+#undef SWIN
+
+            prog_bar(0);
+            if (MPU6050_Calibrate(&hi2c1, &mpu_calib, 100, prog_bar))
+            {
+                int good = 1;
+                uint8_t tbuf[14];
+                for (int i = 0; i < 5; i++)
+                {
+                    HAL_I2C_Mem_Read(&hi2c1, MPU6050_ADDR,
+                                     MPU6050_ACCEL_XOUT_H, 1, tbuf, 14, 100);
+                    MPU6050_Correct(tbuf, &mpu_calib);
+                    int16_t *s = (int16_t *)tbuf;
+                    if (s[2] < 12000 || s[2] > 20000
+                        || (s[0] < 0 ? -s[0] : s[0]) > 5000
+                        || (s[1] < 0 ? -s[1] : s[1]) > 5000)
+                    {
+                        good = 0;
+                        break;
+                    }
+                    HAL_Delay(20);
+                }
+                if (good)
+                {
+                    HAL_UART_Transmit(&huart1, (uint8_t *)
+                        "\r\nCalibration OK\r\n", 18, 100);
+                    break;
+                }
+            }
+            HAL_UART_Transmit(&huart1, (uint8_t *)
+                "\r\nBad calibration, retrying...\r\n", 32, 100);
         }
     }
     xTaskCreateStatic(blink_task, "blink", configMINIMAL_STACK_SIZE,
                       NULL, 1, blink_stack, &blink_tcb);
-    xTaskCreateStatic(sensor_task, "sensor", configMINIMAL_STACK_SIZE,
-                      NULL, 2, sensor_stack, &sensor_tcb);
+    sensor_task_handle = xTaskCreateStatic(sensor_task, "sensor",
+                      configMINIMAL_STACK_SIZE,
+                      NULL, 3, sensor_stack, &sensor_tcb);
     HAL_UART_Transmit(&huart1, (uint8_t *)"Starting scheduler...\r\n", 23, 100);
     scheduler_running = 1;
     vTaskStartScheduler();
