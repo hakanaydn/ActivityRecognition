@@ -106,11 +106,14 @@ static char *fmt_fixed(char *p, int16_t raw, int16_t divisor, int dec)
 
 static void format_imu_line(int16_t *s)
 {
-    static char line[32];
+    static char line[64];
     char *p = line;
     p = fmt_fixed(p, s[0], 16384, 4); *p++ = ',';  // ax (g)
     p = fmt_fixed(p, s[1], 16384, 4); *p++ = ',';  // ay (g)
-    p = fmt_fixed(p, s[2], 16384, 4);              // az (g)
+    p = fmt_fixed(p, s[2], 16384, 4); *p++ = ',';  // az (g)
+    p = fmt_fixed(p, s[3],   131, 2); *p++ = ',';  // gx (deg/s)
+    p = fmt_fixed(p, s[4],   131, 2); *p++ = ',';  // gy (deg/s)
+    p = fmt_fixed(p, s[5],   131, 2);              // gz (deg/s)
     *p++ = '\r'; *p++ = '\n';
     Output_Write((uint8_t *)line, p - line);
 }
@@ -445,7 +448,10 @@ int main(void)
                     int16_t *s = (int16_t *)tbuf;
                     if (s[2] < 12000 || s[2] > 20000
                         || (s[0] < 0 ? -s[0] : s[0]) > 5000
-                        || (s[1] < 0 ? -s[1] : s[1]) > 5000)
+                        || (s[1] < 0 ? -s[1] : s[1]) > 5000
+                        || (s[3] < 0 ? -s[3] : s[3]) > 100
+                        || (s[4] < 0 ? -s[4] : s[4]) > 100
+                        || (s[5] < 0 ? -s[5] : s[5]) > 100)
                     {
                         good = 0;
                         break;
