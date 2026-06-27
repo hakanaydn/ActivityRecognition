@@ -8,3 +8,5 @@ build/
 *.su
 *.d
 *.log
+__pycache__/
+*.pyc

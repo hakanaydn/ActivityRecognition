@@ -1,6 +1,7 @@
 #include "main.h"
 #include "mpu6050.h"
 #include "transport.h"
+#include "nrf24.h"
 #include "version.h"
 #include <stdint.h>
 #include <string.h>
@@ -15,8 +16,18 @@ DMA_HandleTypeDef hdma_usart1_tx;
 
 static uint8_t mpu_buf[14];
 static MPU6050_Calib_t mpu_calib;
+static NRF24_t nrf_dev;
+static uint32_t pkt_index;
 static TaskHandle_t sensor_task_handle;
 static volatile uint8_t scheduler_running;
+
+#pragma pack(push, 1)
+typedef struct {
+    uint32_t index;
+    int16_t ax, ay, az;
+    int16_t gx, gy, gz;
+} IMUPacket_t;
+#pragma pack(pop)
 
 void xPortSysTickHandler(void);
 
@@ -70,7 +81,8 @@ static void startup_banner(void)
         "  Build: " FW_BUILD "\r\n",
         "  MCU:   STM32F103C8T6 (72MHz)\r\n",
         "  IMU:   MPU6050 (I2C+DMA @ 100kHz)\r\n",
-        "  Link:  UART1 (DMA TX @ 115200 baud)\r\n",
+        "  Link:  nRF24L01+ (SPI1 @ 9MHz)\r\n",
+        "  UART:  USB-UART (DMA TX @ 115200)\r\n",
         "\r\n",
     };
     for (int i = 0; i < (int)(sizeof(lines) / sizeof(lines[0])); i++)
@@ -158,6 +170,13 @@ void MX_GPIO_Init(void)
     GPIO_InitStruct.Mode = GPIO_MODE_AF_OD;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+    GPIO_InitStruct.Pin = GPIO_PIN_0 | GPIO_PIN_1;
+    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0 | GPIO_PIN_1, GPIO_PIN_SET);
 }
 
 void MX_DMA_Init(void)
@@ -255,6 +274,7 @@ void SystemClock_Config(void)
 
     __HAL_RCC_I2C1_CLK_ENABLE();
     __HAL_RCC_USART1_CLK_ENABLE();
+    __HAL_RCC_SPI1_CLK_ENABLE();
 }
 
 void HAL_I2C_MspInit(I2C_HandleTypeDef *hi2c)
@@ -327,6 +347,11 @@ static void sensor_task(void *arg)
         gyf = (int16_t)(((int32_t)gyf * 7 + (int32_t)s[5]) / 8);
         gzf = (int16_t)(((int32_t)gzf * 7 + (int32_t)s[6]) / 8);
         s[4] = gxf; s[5] = gyf; s[6] = gzf;
+        IMUPacket_t pkt;
+        pkt.index = pkt_index++;
+        pkt.ax = s[0]; pkt.ay = s[1]; pkt.az = s[2];
+        pkt.gx = s[4]; pkt.gy = s[5]; pkt.gz = s[6];
+        NRF24_Transmit((uint8_t *)&pkt, sizeof(pkt));
         format_imu_line(s);
         i2c_start_read();
     }
@@ -356,6 +381,19 @@ int main(void)
     print_reset_cause();
 
     startup_banner();
+
+    const uint8_t nrf_addr[5] = {0xAA, 0x00, 0x00, 0x00, 0x01};
+    uint8_t nrf_ok = NRF24_Init(&nrf_dev, nrf_addr);
+    if (!nrf_ok)
+    {
+        uint8_t msg[] = "nRF24L01 init failed\r\n";
+        HAL_UART_Transmit(&huart1, msg, sizeof(msg) - 1, 100);
+    }
+    else
+    {
+        HAL_UART_Transmit(&huart1, (uint8_t *)"nRF24L01+ OK\r\n", 14, 100);
+        NRF24_SetMode(NRF24_TX);
+    }
 
     if (!MPU6050_Init(&hi2c1))
     {

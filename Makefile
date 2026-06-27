@@ -51,7 +51,8 @@ INCLUDES = \
   -I$(CMSIS_DEVICE) \
   -I$(HAL_INC) \
   -I$(FREERTOS_INC) \
-  -I$(FREERTOS_DIR)/portable/GCC/ARM_CM3
+  -I$(FREERTOS_DIR)/portable/GCC/ARM_CM3 \
+  -Inrf24
 
 # Sources
 C_SOURCES = \
@@ -69,6 +70,7 @@ C_SOURCES = \
   $(HAL_SRC)/stm32f1xx_hal_cortex.c \
   $(HAL_SRC)/stm32f1xx_hal_dma.c \
   $(HAL_SRC)/stm32f1xx_hal_uart.c \
+  nrf24/nrf24.c \
   $(FREERTOS_DIR)/tasks.c \
   $(FREERTOS_DIR)/queue.c \
   $(FREERTOS_DIR)/list.c \
