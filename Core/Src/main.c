@@ -3,6 +3,7 @@
 #include "transport.h"
 #include "version.h"
 #include "har_model.h"
+#include <stdint.h>
 #include <string.h>
 #include "FreeRTOS.h"
 #include "task.h"
@@ -72,27 +73,43 @@ static void i2c_read_next(void)
                          1, mpu_buf, 14);
 }
 
+static char *fmt_fixed(char *p, int16_t raw, int16_t divisor, int dec)
+{
+    int32_t v = raw;
+    if (v < 0) { *p++ = '-'; v = -v; }
+    int32_t ip = v / divisor;
+    int32_t fp = v % divisor;
+    for (int i = 0; i < dec; i++) fp *= 10;
+    fp /= divisor;
+
+    char buf[8], *q = buf;
+    do { *q++ = '0' + ip % 10; ip /= 10; } while (ip);
+    do { *p++ = *--q; } while (q > buf);
+    *p++ = '.';
+    for (int i = dec; i > 0; i--) { buf[i-1] = '0' + fp % 10; fp /= 10; }
+    for (int i = 0; i < dec; i++) *p++ = buf[i];
+    return p;
+}
+
+static void format_imu_line(int16_t *s)
+{
+    static char line[64];
+    char *p = line;
+    p = fmt_fixed(p, s[0], 16384, 4); *p++ = ',';  // ax (g)
+    p = fmt_fixed(p, s[1], 16384, 4); *p++ = ',';  // ay (g)
+    p = fmt_fixed(p, s[2], 16384, 4); *p++ = ',';  // az (g)
+    p = fmt_fixed(p, s[4], 131,   2); *p++ = ',';  // gx (°/s)
+    p = fmt_fixed(p, s[5], 131,   2); *p++ = ',';  // gy (°/s)
+    p = fmt_fixed(p, s[6], 131,   2);              // gz (°/s)
+    *p++ = '\r'; *p++ = '\n';
+    Output_Write((uint8_t *)line, p - line);
+}
+
 void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c)
 {
     if (hi2c->Instance != I2C1) return;
     MPU6050_Correct(mpu_buf, &mpu_calib);
-    Output_Write(mpu_buf, 14);
-
-    int16_t *s = (int16_t *)mpu_buf;
-    int16_t sample[6] = { s[0], s[1], s[2], s[4], s[5], s[6] };
-    HAR_Push(&har_rb, sample);
-    if (HAR_Ready(&har_rb)) {
-        float scores[HAR_NCLASSES];
-        int cls = HAR_Run(&har_rb, scores);
-        uint8_t msg[20];
-        uint8_t *p = msg;
-        const char *name = HAR_ClassNames[cls];
-        while (*name) *p++ = *name++;
-        *p++ = '\r';
-        *p++ = '\n';
-        Output_Write(msg, p - msg);
-    }
-
+    format_imu_line((int16_t *)mpu_buf);
     i2c_read_next();
 }
 
@@ -273,7 +290,6 @@ static void blink_task(void *arg)
     for (;;)
     {
         HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
-        HAL_UART_Transmit(&huart1, (uint8_t *)"pirt\r\n", 6, 100);
         vTaskDelay(pdMS_TO_TICKS(500));
         HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);
         vTaskDelay(pdMS_TO_TICKS(500));
