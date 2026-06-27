@@ -18,11 +18,22 @@ uint8_t MPU6050_Init(I2C_HandleTypeDef *i2c)
     if (whoami != 0x68 && whoami != 0x70 && whoami != 0x71 && whoami != 0x72)
         return 0;
 
-    uint8_t val = 0x01;  // CLKSEL=1: PLL with X gyro ref (stable gyro)
-    HAL_I2C_Mem_Write(i2c, MPU6050_ADDR, MPU6050_PWR_MGMT_1, 1, &val, 1, 100);
+    uint8_t val;
 
-    val = 0x00;
-    HAL_I2C_Mem_Write(i2c, MPU6050_ADDR, MPU6050_GYRO_CONFIG, 1, &val, 1, 100);
+    val = 0x07;  // reset gyro + accel + temp signal paths
+    HAL_I2C_Mem_Write(i2c, MPU6050_ADDR, 0x68, 1, &val, 1, 100);
+    HAL_Delay(50);
+
+    val = 0x01;  // CLKSEL=1: PLL with X gyro ref (wake up)
+    HAL_I2C_Mem_Write(i2c, MPU6050_ADDR, MPU6050_PWR_MGMT_1, 1, &val, 1, 100);
+    HAL_Delay(50);
+
+    for (int i = 0; i < 3; i++)
+    {
+        val = 0x03;  // FS_SEL=0 (±250), FCHOICE_B=0b11 (gyro DLPF)
+        HAL_I2C_Mem_Write(i2c, MPU6050_ADDR, MPU6050_GYRO_CONFIG, 1, &val, 1, 100);
+        HAL_Delay(1);
+    }
 
     val = 0x00;
     HAL_I2C_Mem_Write(i2c, MPU6050_ADDR, MPU6050_ACCEL_CONFIG, 1, &val, 1, 100);

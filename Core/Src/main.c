@@ -111,9 +111,9 @@ static void format_imu_line(int16_t *s)
     p = fmt_fixed(p, s[0], 16384, 4); *p++ = ',';  // ax (g)
     p = fmt_fixed(p, s[1], 16384, 4); *p++ = ',';  // ay (g)
     p = fmt_fixed(p, s[2], 16384, 4); *p++ = ',';  // az (g)
-    p = fmt_fixed(p, s[3],   131, 2); *p++ = ',';  // gx (deg/s)
-    p = fmt_fixed(p, s[4],   131, 2); *p++ = ',';  // gy (deg/s)
-    p = fmt_fixed(p, s[5],   131, 2);              // gz (deg/s)
+    p = fmt_fixed(p, s[4],   131, 2); *p++ = ',';  // gx (deg/s)
+    p = fmt_fixed(p, s[5],   131, 2); *p++ = ',';  // gy (deg/s)
+    p = fmt_fixed(p, s[6],   131, 2);              // gz (deg/s)
     *p++ = '\r'; *p++ = '\n';
     Output_Write((uint8_t *)line, p - line);
 }
@@ -316,12 +316,18 @@ static void sensor_task(void *arg)
     TickType_t last = xTaskGetTickCount();
     vTaskDelay(pdMS_TO_TICKS(10));
     i2c_start_read();
+    int16_t gxf = 0, gyf = 0, gzf = 0;
     for (;;)
     {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         vTaskDelayUntil(&last, pdMS_TO_TICKS(20));
         MPU6050_Correct(mpu_buf, &mpu_calib);
-        format_imu_line((int16_t *)mpu_buf);
+        int16_t *s = (int16_t *)mpu_buf;
+        gxf = (int16_t)(((int32_t)gxf * 7 + (int32_t)s[4]) / 8);
+        gyf = (int16_t)(((int32_t)gyf * 7 + (int32_t)s[5]) / 8);
+        gzf = (int16_t)(((int32_t)gzf * 7 + (int32_t)s[6]) / 8);
+        s[4] = gxf; s[5] = gyf; s[6] = gzf;
+        format_imu_line(s);
         i2c_start_read();
     }
 }
@@ -361,6 +367,7 @@ int main(void)
         MPU6050_SetDLPF(&hi2c1, MPU6050_DLPF_21HZ);
         MPU6050_SetSampleRate(&hi2c1, 50);
 
+
         HAL_UART_Transmit(&huart1, (uint8_t *)
             "Place sensor flat on a table, chip facing up.\r\n", 50, 100);
 
@@ -390,10 +397,16 @@ int main(void)
                     int16_t ax = sx[(sci + SWIN - 1) % SWIN];
                     int16_t ay = sy[(sci + SWIN - 1) % SWIN];
                     int16_t az = sz[(sci + SWIN - 1) % SWIN];
-                    char line[32], *p = line;
+                    int16_t gx = (int16_t)((buf[8]  << 8) | buf[9]);
+                    int16_t gy = (int16_t)((buf[10] << 8) | buf[11]);
+                    int16_t gz = (int16_t)((buf[12] << 8) | buf[13]);
+                    char line[64], *p = line;
                     *p++ = 'X'; *p++ = '='; p = fmt_fixed(p, ax, 16384, 4);
                     *p++ = ' '; *p++ = 'Y'; *p++ = '='; p = fmt_fixed(p, ay, 16384, 4);
                     *p++ = ' '; *p++ = 'Z'; *p++ = '='; p = fmt_fixed(p, az, 16384, 4);
+                    *p++ = ' '; *p++ = 'G'; *p++ = '='; p = fmt_fixed(p, gx, 131, 2);
+                    *p++ = ' '; p = fmt_fixed(p, gy, 131, 2);
+                    *p++ = ' '; p = fmt_fixed(p, gz, 131, 2);
                     *p++ = '\r'; *p++ = '\n';
                     HAL_UART_Transmit(&huart1, (uint8_t *)line, p - line, 100);
                 }
@@ -448,10 +461,7 @@ int main(void)
                     int16_t *s = (int16_t *)tbuf;
                     if (s[2] < 12000 || s[2] > 20000
                         || (s[0] < 0 ? -s[0] : s[0]) > 5000
-                        || (s[1] < 0 ? -s[1] : s[1]) > 5000
-                        || (s[3] < 0 ? -s[3] : s[3]) > 100
-                        || (s[4] < 0 ? -s[4] : s[4]) > 100
-                        || (s[5] < 0 ? -s[5] : s[5]) > 100)
+                        || (s[1] < 0 ? -s[1] : s[1]) > 5000)
                     {
                         good = 0;
                         break;
