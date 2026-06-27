@@ -29,6 +29,22 @@ void SysTick_Handler(void)
         HAL_IncTick();
 }
 
+static void print_reset_cause(void)
+{
+    const char *cause = "Unknown";
+    if (__HAL_RCC_GET_FLAG(RCC_FLAG_PORRST))      cause = "Power-on (POR)";
+    else if (__HAL_RCC_GET_FLAG(RCC_FLAG_SFTRST))   cause = "Software";
+    else if (__HAL_RCC_GET_FLAG(RCC_FLAG_IWDGRST))  cause = "IWDG";
+    else if (__HAL_RCC_GET_FLAG(RCC_FLAG_WWDGRST))  cause = "WWDG";
+    else if (__HAL_RCC_GET_FLAG(RCC_FLAG_PINRST))   cause = "NRST pin";
+    else if (__HAL_RCC_GET_FLAG(RCC_FLAG_LPWRRST))  cause = "Low-power";
+
+    HAL_UART_Transmit(&huart1, (uint8_t *)"Reset: ", 7, 100);
+    HAL_UART_Transmit(&huart1, (uint8_t *)cause, strlen(cause), 100);
+    HAL_UART_Transmit(&huart1, (uint8_t *)"\r\n", 2, 100);
+    __HAL_RCC_CLEAR_RESET_FLAGS();
+}
+
 static void startup_banner(void)
 {
     const char *lines[] = {
@@ -284,6 +300,8 @@ int main(void)
     MX_I2C1_Init();
     MX_USART1_UART_Init();
     Output_Init();
+
+    print_reset_cause();
 
     startup_banner();
 
