@@ -642,7 +642,11 @@ class IMUGUI:
             self._on_close()
 
 def main():
+    port = sys.argv[1] if len(sys.argv) > 1 else None
     gui = IMUGUI()
+    if port:
+        gui.port_var.set(port)
+        gui._connect_port()
     gui.run()
 
 if __name__ == "__main__":

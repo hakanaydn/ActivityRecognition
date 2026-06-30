@@ -1,131 +1,133 @@
-# Session Özeti — stm32-mpu6050
+# Session Log — Wireless IMU System
 
-> **Her konuşma sonunda güncellenir.** Yeni bir opencode oturumunda önce bu dosyayı bana ilet, kaldığım yerden devam edeyim.
+> Last updated: 2026-06-28
+> Resume: Read this file, then continue from **Next Steps** below.
 
-## Son Oturum (2026-06-27)
+---
 
-### Yapılanlar
-- **v1.6.0**: nRF24L01+ wireless link + receiver bridge STM32 + PC GUI
-- **nRF24L01 driver** (`nrf24/nrf24.c`): register-level SPI1 (PA5,6,7), CSN=PB0, CE=PB1, Enhanced ShockBurst, TX/RX, 2Mbps, channel 78, AA:00:00:00:01 adres
-- **STM32 #1** (sensor): Her 20ms'de bir binary IMU paketi (16 bayt: uint32 index + 6×int16 raw) gönderiyor, UART CSV çıktısı korundu
-- **STM32 #2** (receiver/bridge): Minimal firmware, nRF24 RX → UART TX (115200) binary forward, LED blink her pakette
-- **PC GUI** (`pc-gui/gui.py`): matplotlib+TkAgg, real-time 6-axis plot, keyboard save-to-CSV ([s]), command send ([r]), pyserial
-- **Proje yapısı**: Ortak `nrf24/` driver, her proje kendi `Makefile`'ı ile bağımsız build
+## Project
+Wireless IMU system: STM32F103C8T6 (client) + MPU6050 + nRF24L01+ → STM32F103C8T6 (server) → USB Bulk → PC GUI
 
-### Sonraki Adım (önerilen)
-- İlk test: ST-Link ile sensor node flash, sonra receiver bridge flash
-- Seri kablolama: sensor node → nRF24 TX, receiver → nRF24 RX, USB-UART → PC
-- PC GUI test et: `python3 pc-gui/gui.py`
-- HAR inference motoru nRF24 üzerinden gönderilecek şekilde güncelle
-- Madgwick filter ekle (orientation)
+All source: `/home/hakan/stm32-mpu6050/`
+Remote: `git@github.com:hakanaydn/ActivityRecognition.git`
 
-### Çalıştırma
+---
+
+## Progress
+
+### Done
+- v1.0.0–v1.5.0: Full sensor stack (MPU6050 driver, FreeRTOS, I2C/UART DMA, fault handlers, calibration, SW LPF, gyro output)
+- v1.6.0: nRF24L01+ register-level SPI driver, receiver bridge STM32, PC GUI, binary packet, commit + tag
+- Folder restructured: `common/` (nRF24, packet, Drivers, Startup, Middlewares, linker), `client/`, `server/firmware/`, `server/pc-gui/`, `test/`
+- **Packet**: 32-byte frames (`common/packet.h` + `common/packet.c`) — magic (IMU/DEBUG/CMD/ACK), seq counter, timestamp, 18B payload, CRC16-CCITT
+- **nRF24 driver** (`common/nrf24/`): `NRF24_TransmitAck()` (TX + wait for ACK payload), `NRF24_SendAckPayload()` (pre-load ACK payload)
+- **USB Bulk** (`server/firmware/Core/Src/usb_bulk.c`): register-level, EP0 control, EP1 IN 64B, EP2 OUT 64B, VID=0x0483 PID=0x5711
+- **Server main** (`server/firmware/Core/Src/main.c`): register-level clock (HSE→PLL 72 MHz), nRF24 RX→USB Bulk IN, USB Bulk OUT→ACK payload via nRF24
+- **Client main** (`client/Core/Src/main.c`): `debug_puts()`, `my_strcpy()`, debug ring buffer (16×48 chars), `sensor_task` uses `NRF24_TransmitAck`, `handle_ack_command()` for CMD_DEBUG_ON/OFF/CALIBRATE/RESET
+- Both builds succeed with zero errors/warnings:
+  - Server: 3320 text, 4 data, 4276 bss (7.6 KB)
+  - Client: 22364 text, 36 data, 7756 bss (30.1 KB)
+- `test/mock_server.py` + `test/mock_gui.py`: TCP-based mock (localhost:12345) simulating nRF24↔USB pipeline
+- Headless mock test: 125 packets @ 50 Hz, 0 CRC errors, 0 lost, command round-trip verified
+- CRC16-CCITT cross-validated C ↔ Python (bit-exact)
+- tkinter/Pillow fixed: `pip install --user --force-reinstall Pillow`
+
+### Verified Working
+- Mock GUI connects to Mock Server, plots 6-axis sine data, stats show rate/loss
+- Commands (Debug ON/OFF, Calibrate, Reset) send CMD packets, server responds with ACK
+- Save CSV exports buffered data
+
+### Blocked / Not Tested
+- **Hardware flashing not yet attempted** (no ST-Link connected in session)
+- **USB enumeration** not verified on PC
+- **nRF24 range/connectivity** not tested with physical hardware
+- **tkinter display** only works when user runs with X11 display
+
+---
+
+## Build Commands
+
 ```bash
-cd /home/hakan/stm32-mpu6050
-make -j4 && make flash       # sensor node
-cd receiver && make -j4 && make flash   # receiver bridge
-python3 pc-gui/gui.py         # PC GUI
-cd /home/hakan/stm32-mpu6050 && make clean && git add -A && git commit -m "v1.6.0" && git tag v1.6.0 && git push && git push --tags
+# Build client firmware
+cd ~/stm32-mpu6050/client && make -j4
+
+# Build server firmware
+cd ~/stm32-mpu6050/server/firmware && make -j4
+
+# Flash (via ST-Link)
+make flash    # run from respective directory
+
+# Headless mock test
+cd ~/stm32-mpu6050/test && python3 -c "
+import sys; sys.path.insert(0,'.')
+from mock_gui import *
+import struct, time, socket, threading
+
+server = socket.socket()
+server.bind(('127.0.0.1', 12346))
+server.listen(1)
+
+def serve():
+    conn, _ = server.accept()
+    buf = b''
+    for i in range(125):
+        pkt = build_imu_packet(i+1, i*0.02)
+        conn.sendall(pkt)
+        time.sleep(0.005)
+    conn.close()
+
+t = threading.Thread(target=serve, daemon=True); t.start()
+sock = socket.socket(); sock.connect(('127.0.0.1', 12346))
+sock.settimeout(2)
+ok = err = 0
+while True:
+    try:
+        d = sock.recv(4096)
+        if not d: break
+        for off in range(0, len(d), 32):
+            p = parse_packet(d[off:off+32])
+            if p: ok+=1; last_p=p
+            else: err+=1
+    except: break
+print(f'OK={ok} ERR={err}')
+sock.close(); server.close()
+"
 ```
 
 ---
 
-## Proje
-STM32F103C8T6 (Blue Pill) + MPU6050 IMU + nRF24L01+ wireless, FreeRTOS, HAL, I2C DMA, UART DMA TX
+## Next Steps (Resume Here)
+1. **Flash server firmware**: `cd ~/stm32-mpu6050/server/firmware && make flash`, verify USB enumeration (`lsusb` → VID=0x0483 PID=0x5711)
+2. **Flash client firmware**: `cd ~/stm32-mpu6050/client && make flash`
+3. **Test real hardware**: `cd ~/stm32-mpu6050/server/pc-gui && python3 gui.py`
+4. If USB not detected, adjust D+ pull-up timing in `USB_Bulk_Init()` (PA12 LOW duration)
+5. Run mock GUI test (tkinter available):
 
-## Ortam
-- **Toolchain**: `/home/hakan/.local/opt/arm-none-eabi/usr/bin/` (arm-none-eabi)
-- **Programmer**: ST-Link V2 → OpenOCD
-- **Git remote**: `git@github.com:hakanaydn/ActivityRecognition.git`
-- **Proje dizini**: `/home/hakan/stm32-mpu6050`
-- **Build sensor**: `make -j4 && make flash` (proje kökünde)
-- **Build receiver**: `cd receiver && make -j4 && make flash`
+   ```bash
+   # Terminal 1:
+   cd ~/stm32-mpu6050 && python3 test/mock_server.py
+   # Terminal 2:
+   cd ~/stm32-mpu6050 && python3 test/mock_gui.py
+   ```
 
-## Versiyon Geçmişi
+---
 
-| Tag | Açıklama |
-|-----|----------|
-| v1.0.0 | İlk scaffold, MPU6050 driver, HAR inference, blink task |
-| v1.1.0 | Fault handlers (HardFault, MemManage, BusFault, UsageFault), reset cause |
-| v1.2.0 | Physical unit output (g, °/s), HAR removed from callback, blink cleanup |
-| v1.3.0 | Byte-order fix, clone MPU6050 (WHO_AM_I=0x70), CLKSEL=1, notification-based sensor_task@50Hz |
-| v1.4.0 | Smart calibration + progress bar `[==== ...]` + retry loop |
-| v1.4.1 | Gyro output enabled + gyro cal verification (geri alındı) |
-| v1.5.0 | Gyro output + SW LPF (α=1/8) + init fix |
-| **v1.6.0** | **Son versiyon** — nRF24L01+ wireless link + receiver bridge + PC GUI |
+## Key Technical Details
 
-## v1.6.0 Durumu
-
-### Çalışan Özellikler
-- **Accel**: Mükemmel kalibre (X≈0, Y≈0, Z≈1.00 g, ±0.02 g)
-- **Gyro**: Yazılımsal LPF ile ±1-2 °/s noise (clone MPU6050 DLPF çalışmıyor)
-- **Çıktı formatı**: CSV `ax,ay,az,gx,gy,gz` @ 50 Hz (UART) + binary packet (nRF24)
-- **Wireless**: nRF24L01+ SPI1 (register-level), 2Mbps, ESB TX, ACK payloads
-- **Receiver bridge**: 2. STM32 nRF24 RX → USB-UART (115200) binary forward
-- **PC GUI**: Real-time matplotlib plot, CSV save, command send
-- **Kalibrasyon**: Smart wait + progress bar + retry (sadece accel control)
-
-### Bilinen Sorunlar
-1. Clone MPU6050 (WHO_AM_I=0x70) gyro DLPF'si donanımsal çalışmıyor → SW LPF ile çözüldü
-2. ST-Link ara sıra bağlantı kesiyor → `make flash` tekrar dene
-3. Gyro'da küçük bias kalıyor (özellikle Z'de ≈ -0.5 °/s)
-4. nRF24L01 henüz saha testi yapılmadı — kablolama + ilk çalıştırma bekleniyor
-
-### Devam Etmek İçin
-```bash
-cd /home/hakan/stm32-mpu6050
-# Sensor node flash:
-make -j4 && make flash
-# Receiver bridge flash:
-cd receiver && make -j4 && make flash
-# PC GUI:
-python3 pc-gui/gui.py
-```
-
-### Kilometre Taşları
-- [x] MPU6050 init & temel okuma
-- [x] I2C DMA + UART DMA TX
-- [x] FreeRTOS task'lar
-- [x] Smart calibration + progress bar
-- [x] Gyro output + yazılımsal LPF
-- [x] nRF24L01+ wireless link (TX/RX)
-- [x] Receiver bridge STM32
-- [x] PC GUI (matplotlib real-time plot)
-- [ ] HAR (Human Activity Recognition) nRF24 üzerinden
-- [ ] Madgwick/Complementary filter (orientation)
-- [ ] Daha iyi gyro bias tracking (stationary detection)
-
-### Önemli Kod Lokasyonları
-| Dosya | Ne var? |
-|-------|---------|
-| `Core/Src/main.c` | `sensor_task` (notif-based, 50 Hz, SW LPF, nRF24 TX), `format_imu_line`, `prog_bar`, kalibrasyon |
-| `Core/Src/mpu6050.c` | `MPU6050_Init` (CLKSEL=1, clone WHO_AM_I), `MPU6050_Calibrate`, `MPU6050_Correct` |
-| `Core/Inc/mpu6050.h` | Register defines, calib struct, progress callback |
-| `Core/Src/transport_uart.c` | `Output_Write` (256B ring buffer + DMA TX) |
-| `Core/Inc/version.h` | `FW_VERSION` |
-| `nrf24/nrf24.c` | nRF24L01 driver (register-level SPI, ESB TX/RX) |
-| `nrf24/nrf24.h` | nRF24 API |
-| `receiver/Core/Src/main.c` | Receiver bridge: nRF24 RX → UART TX binary forward |
-| `pc-gui/gui.py` | PC GUI: matplotlib real-time 6-axis IMU plot |
-| `receiver/Makefile` | Receiver projesi build (ortak nrf24/ ve Drivers/ kullanır) |
-
-### Mimari Kararlar
-- nRF24L01: register-level SPI (HAL SPI source yok), 2Mbps, ESB, kanal 78
-- nRF24 adres: `AA:00:00:00:01`
-- Binary packet: 16 bayt (uint32 index + 6×int16 raw), ~1 KB/s @ 50 Hz
-- Receiver bridge: minimal super loop, FreeRTOS yok, basit forward
-- PC GUI: matplotlib+TkAgg (PyQt5 yok ortamda), pyserial
-
-### Donanım Bağlantıları
-```
-Sensor Node (STM32 #1):         Receiver Bridge (STM32 #2):
-  PA5 (SPI1 SCK)  → nRF24 SCK    PA5 (SPI1 SCK)  → nRF24 SCK
-  PA6 (SPI1 MISO) → nRF24 MISO   PA6 (SPI1 MISO) → nRF24 MISO
-  PA7 (SPI1 MOSI) → nRF24 MOSI   PA7 (SPI1 MOSI) → nRF24 MOSI
-  PB0 (GPIO)      → nRF24 CSN    PB0 (GPIO)      → nRF24 CSN
-  PB1 (GPIO)      → nRF24 CE     PB1 (GPIO)      → nRF24 CE
-  3.3V            → nRF24 VCC    3.3V            → nRF24 VCC
-  GND             → nRF24 GND    GND             → nRF24 GND
-                                  PA9 (USART1 TX) → USB-UART RX
-                                  PA10 (USART1 RX) → USB-UART TX
-```
+| Item | Value |
+|------|-------|
+| MCU | STM32F103C8T6 (Cortex-M3, 64 KB flash, 20 KB RAM) |
+| Toolchain | `/home/hakan/.local/opt/arm-none-eabi/usr/bin/` |
+| No `<string.h>` | newlib not installed; use manual loops |
+| ST-Link | OpenOCD; occasional retry needed |
+| nRF24 addr | `{0xAA, 0x00, 0x00, 0x00, 0x01}` ch78 2Mbps ESB ACK |
+| Packet size | 32 bytes (4 magic + 4 seq + 4 ts + 18 payload + 2 crc) |
+| CRC16 | CCITT over bytes 4–29, polynomial 0x1021 |
+| USB | FS 12 Mbps, vendor-specific, EP1 IN 64B, EP2 OUT 64B |
+| IMU rate | 50 Hz |
+| DLPF | SW EMA α=1/8 (gyro hardware DLPF non-functional) |
+| Gyro Z bias | ≈ -0.5 °/s residual |
+| Server flash | 7.6 KB |
+| Client flash | 30.1 KB |
+| Startup vector | `USB_LP_CAN1_RX0_IRQHandler` at position 20 (F103xB) |
+| Board | Blue Pill, D+ pull-up R10=4.7 kΩ (non-spec 1.5 kΩ) |
