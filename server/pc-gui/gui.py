@@ -58,7 +58,7 @@ def parse_packet(data):
     magic, seq_nr, ts = struct.unpack_from("<III", data, 0)
     payload = data[12:30]
     pkt_crc = struct.unpack_from("<H", data, 30)[0]
-    calc = crc16(data[4:30])
+    calc = crc16(data[:30])
     if calc != pkt_crc:
         return None
     return {"magic": magic, "seq": seq_nr, "timestamp": ts,
@@ -356,7 +356,8 @@ class IMUGUI:
                    ).pack(fill=tk.X, pady=1)
 
         self.ani = FuncAnimation(self.fig, self._update_plot,
-                                 interval=UPDATE_MS, blit=False)
+                                 interval=UPDATE_MS, blit=False,
+                                 save_count=100)
 
         self.root.after(100, self._update_stats)
         print("Controls: Ctrl+S Save CSV")
@@ -367,7 +368,7 @@ class IMUGUI:
         pkt = bytearray(PACKET_SIZE)
         struct.pack_into("<III", pkt, 0, MAGIC_CMD, 0, 0)
         pkt[12] = cmd_id
-        crc = crc16(pkt[4:30])
+        crc = crc16(pkt[:30])
         struct.pack_into("<H", pkt, 30, crc)
         try:
             self.ser.write(pkt)
@@ -524,6 +525,7 @@ class IMUGUI:
                     ax, ay, az, gx, gy, gz = struct.unpack_from("<hhhhhh",
                                                                   pl, 0)
                     t = time.time() - self._t0
+                    self._last_imu_time = time.time()
                     raw_hex = pl[:18].hex().upper()
                     self.pkt_log.append(
                         f"seq={pkt['seq']:5d}  "
@@ -537,7 +539,6 @@ class IMUGUI:
                     self.buf_gx.append((t, gx * GYRO_SCALE))
                     self.buf_gy.append((t, gy * GYRO_SCALE))
                     self.buf_gz.append((t, gz * GYRO_SCALE))
-                    self._last_imu_time = t
                 elif pkt["magic"] == MAGIC_DEBUG:
                     pl = pkt["payload"]
                     dlen = min(pl[0], 17)
@@ -595,37 +596,39 @@ class IMUGUI:
         return lines
 
     def _update_stats(self):
-        elapsed = time.time() - self.start_time
-        rate = self.pkt_count / elapsed if elapsed > 0 else 0
-        total = self.pkt_count + self.lost_count
-        loss_pct = 100.0 * self.lost_count / total if total else 0
-        self.lbl_pkts.config(text=f"Packets: {self.pkt_count}")
-        self.lbl_loss.config(text=f"Lost: {self.lost_count} ({loss_pct:.1f}%)")
-        self.lbl_rate.config(text=f"Rate: {rate:.0f} Hz")
-        self.lbl_crc.config(text=f"CRC errors: {self._crc_errors}")
+        try:
+            elapsed = time.time() - self.start_time
+            rate = self.pkt_count / elapsed if elapsed > 0 else 0
+            total = self.pkt_count + self.lost_count
+            loss_pct = 100.0 * self.lost_count / total if total else 0
+            self.lbl_pkts.config(text=f"Packets: {self.pkt_count}")
+            self.lbl_loss.config(text=f"Lost: {self.lost_count} ({loss_pct:.1f}%)")
+            self.lbl_rate.config(text=f"Rate: {rate:.0f} Hz")
+            self.lbl_crc.config(text=f"CRC errors: {self._crc_errors}")
 
-        now = time.time()
-        stat_age = now - self._last_stat_time if self._last_stat_time else 999
-        imu_age = now - self._last_imu_time if self._last_imu_time else 999
+            now = time.time()
+            stat_age = now - self._last_stat_time if self._last_stat_time else 999
+            imu_age = now - self._last_imu_time if self._last_imu_time else 999
 
-        if self._frozen:
-            self.lbl_link.config(text="Plot: FROZEN")
-        elif not self._last_stat_time:
-            self.lbl_link.config(text="Link: waiting...")
-            self.status.set_data_active(False)
-        elif stat_age > 5:
-            self.status.set_nrf_unknown()
-            self.lbl_link.config(text="Link: no STAT packet")
-            self.status.set_data_active(False)
-        elif imu_age < 3:
-            self.status.set_data_active(True)
-            self.lbl_link.config(text=f"Data: {(imu_age)*1000:.0f}ms ago")
-        else:
-            self.status.set_data_active(False)
-            self.lbl_link.config(text=f"Idle: {imu_age:.0f}s")
-            self.status.set_nrf(1)
+            if self._frozen:
+                self.lbl_link.config(text="Plot: FROZEN")
+            elif not self._last_stat_time:
+                self.lbl_link.config(text="Link: waiting...")
+                self.status.set_data_active(False)
+            elif stat_age > 5:
+                self.status.set_nrf_unknown()
+                self.lbl_link.config(text="Link: no STAT packet")
+                self.status.set_data_active(False)
+            elif imu_age < 3:
+                self.status.set_data_active(True)
+                self.lbl_link.config(text=f"Data: {(imu_age)*1000:.0f}ms ago")
+            else:
+                self.status.set_data_active(False)
+                self.lbl_link.config(text=f"Idle: {imu_age:.0f}s")
 
-        self.root.after(500, self._update_stats)
+            self.root.after(500, self._update_stats)
+        except:
+            pass
 
     def _on_close(self):
         self.running = False

@@ -8,7 +8,6 @@
 
 uint8_t nrf24_init_ok = 0;
 
-#define RX_TIMEOUT_MS 2000
 
 static Packet cmd_pkt;
 static uint32_t last_rx_tick;
@@ -113,11 +112,6 @@ void NRF24Task(void *params)
             stat_pkt_count++;
             vTaskDelay(pdMS_TO_TICKS(20));
             continue;
-        }
-
-        TickType_t now2 = xTaskGetTickCount();
-        if (now2 - last_rx_tick > pdMS_TO_TICKS(RX_TIMEOUT_MS) && last_rx_tick > 0) {
-            last_rx_tick = xTaskGetTickCount();
         }
 
         vTaskDelay(1);

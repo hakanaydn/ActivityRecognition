@@ -1,5 +1,7 @@
 #include "nrf24.h"
 #include "stm32f1xx.h"
+#include "FreeRTOS.h"
+#include "task.h"
 
 #ifdef NRF24_USE_HAL
 #define CSN_LOW()   HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_RESET)
@@ -22,7 +24,8 @@ static void spi_init(void) { }
 static uint8_t spi_xfer(uint8_t tx)
 {
     uint8_t rx;
-    HAL_SPI_TransmitReceive(&hspi1, &tx, &rx, 1, HAL_MAX_DELAY);
+    if (HAL_SPI_TransmitReceive(&hspi1, &tx, &rx, 1, 100) != HAL_OK)
+        return 0xFF;
     return rx;
 }
 #else
@@ -46,9 +49,11 @@ static void spi_init(void)
 
 static uint8_t spi_xfer(uint8_t tx)
 {
-    while (!(SPI1->SR & (1 << 1)));
+    uint32_t t = 10000;
+    while (!(SPI1->SR & SPI_SR_TXE) && --t) {}
     *(uint8_t *)&SPI1->DR = tx;
-    while (!(SPI1->SR & (1 << 0)));
+    t = 10000;
+    while (!(SPI1->SR & SPI_SR_RXNE) && --t) {}
     return *(uint8_t *)&SPI1->DR;
 }
 
@@ -233,7 +238,7 @@ uint8_t NRF24_TransmitAck(const uint8_t *data, uint8_t len,
             CE_LOW();
             return 1;
         }
-        for (volatile int d = 0; d < 2000; d++);
+        taskYIELD();
     }
     CE_LOW();
     return 0;

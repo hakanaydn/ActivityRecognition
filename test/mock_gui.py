@@ -183,7 +183,7 @@ class IMUGUI:
         pkt = bytearray(PACKET_SIZE)
         struct.pack_into("<III", pkt, 0, MAGIC_CMD, 0, 0)
         pkt[12] = cmd_id
-        crc = crc16(pkt[4:30])
+        crc = crc16(pkt[:30])
         struct.pack_into("<H", pkt, 30, crc)
         try:
             self.sock.sendall(pkt)

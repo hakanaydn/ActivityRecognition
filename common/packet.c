@@ -20,7 +20,7 @@ void packet_fill(Packet *pkt, uint32_t seq, uint32_t magic,
     pkt->timestamp = 0;
     for (uint8_t i = 0; i < plen && i < PACKET_PAYLOAD_LEN; i++)
         pkt->payload[i] = ((const uint8_t *)payload)[i];
-    pkt->crc = packet_crc16(&pkt->seq, sizeof(Packet) - 6);
+    pkt->crc = packet_crc16(pkt, sizeof(Packet) - 2);
 }
 
 uint8_t packet_verify(const Packet *pkt)
@@ -28,6 +28,7 @@ uint8_t packet_verify(const Packet *pkt)
     return (pkt->magic == PACKET_MAGIC_IMU ||
             pkt->magic == PACKET_MAGIC_DEBUG ||
             pkt->magic == PACKET_MAGIC_CMD ||
-            pkt->magic == PACKET_MAGIC_ACK) &&
-           packet_crc16(&pkt->seq, sizeof(Packet) - 6) == pkt->crc;
+            pkt->magic == PACKET_MAGIC_ACK ||
+            pkt->magic == PACKET_MAGIC_STAT) &&
+           packet_crc16(pkt, sizeof(Packet) - 2) == pkt->crc;
 }

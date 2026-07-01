@@ -39,7 +39,7 @@ def build_imu_packet(seq, t):
     pkt = bytearray(PACKET_SIZE)
     struct.pack_into("<III", pkt, 0, MAGIC_IMU, seq, 0)
     pkt[12:30] = payload
-    crc = crc16(pkt[4:30])
+    crc = crc16(pkt[:30])
     struct.pack_into("<H", pkt, 30, crc)
     return pkt
 
@@ -47,7 +47,7 @@ def build_ack_packet(cmd_id, seq):
     pkt = bytearray(PACKET_SIZE)
     struct.pack_into("<III", pkt, 0, MAGIC_ACK, seq, 0)
     pkt[12] = cmd_id
-    crc = crc16(pkt[4:30])
+    crc = crc16(pkt[:30])
     struct.pack_into("<H", pkt, 30, crc)
     return pkt
 
